@@ -15,57 +15,58 @@ import tensorflow as tf
 import load_policy
 import tf_util
 
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('expert_policy_file', type=str)
+parser.add_argument('envname', type=str)
+parser.add_argument('--render', action='store_true')
+parser.add_argument("--max_timesteps", type=int)
+parser.add_argument('--num_rollouts', type=int, default=20,
+                    help='Number of expert roll outs')
+ARGS = parser.parse_args()
+
+
+def do_rollout(num_rollouts, policy_fn):
+    import gym
+    env = gym.make(ARGS.envname)
+    max_steps = ARGS.max_timesteps or env.spec.timestep_limit
+    returns = []
+    observations = []
+    actions = []
+    for i in range(num_rollouts):
+        obs = env.reset()
+        done = False
+        totalr = 0.
+        steps = 0
+        while not done:
+            action = policy_fn(obs[None, :])
+            observations.append(obs)
+            actions.append(action)
+            obs, r, done, _ = env.step(action)
+            totalr += r
+            steps += 1
+            if ARGS.render:
+                env.render()
+            if steps % 100 == 0: print("rollout: %i - %i/%i" % (i, steps, max_steps))
+            if steps >= max_steps:
+                break
+        returns.append(totalr)
+    print('returns', returns)
+    print('mean return', np.mean(returns))
+    print('std of return', np.std(returns))
+    return actions, observations
+
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('expert_policy_file', type=str)
-    parser.add_argument('envname', type=str)
-    parser.add_argument('--render', action='store_true')
-    parser.add_argument("--max_timesteps", type=int)
-    parser.add_argument('--num_rollouts', type=int, default=20,
-                        help='Number of expert roll outs')
-    args = parser.parse_args()
-
     print('loading and building expert policy')
-    policy_fn = load_policy.load_policy(args.expert_policy_file)
+    policy_fn = load_policy.load_policy(ARGS.expert_policy_file)
     print('loaded and built')
 
-    def _expert_data_gen_fn(num_rollouts=1, verbose=False):
+    def _expert_data_gen_fn(num_rollouts=1):
         with tf.Session():
             tf_util.initialize()
 
-            import gym
-            env = gym.make(args.envname)
-            max_steps = args.max_timesteps or env.spec.timestep_limit
-
-            returns = []
-            observations = []
-            actions = []
-            for i in range(num_rollouts):
-                if verbose:
-                    print('Generated expert data: iter', i)
-                obs = env.reset()
-                done = False
-                totalr = 0.
-                steps = 0
-                while not done:
-                    action = policy_fn(obs[None, :])
-                    observations.append(obs)
-                    actions.append(action)
-                    obs, r, done, _ = env.step(action)
-                    totalr += r
-                    steps += 1
-                    if args.render:
-                        env.render()
-                    if steps % 100 == 0: print("rollout: %i - %i/%i" % (i, steps, max_steps))
-                    if steps >= max_steps:
-                        break
-                returns.append(totalr)
-
-            # print('returns', returns)
-            # print('mean return', np.mean(returns))
-            # print('std of return', np.std(returns))
+            actions, observations = do_rollout(num_rollouts, policy_fn)
 
             # Flatten dimensions for niceness
             observations = np.array(observations)
@@ -182,11 +183,17 @@ def clone(expert_data_gen_fn):
                 print("Iter " + str(training_iter_num) + ", Minibatch Loss= {}".format(loss))
             training_iter_num += 1
 
+
+            if training_iter_num % 100 == 0:
+                def trained_policy(obs):
+                    action = sess.run([pred], feed_dict={x: obs})
+                    return action
+
+                print("Starting rollout of trained policy")
+                do_rollout(1, trained_policy)
+
         print("Optimization Finished!")
 
-        # Calculate accuracy
-        test_expert_data = expert_data_gen_fn()
-        print("Testing Accuracy: TODO")
 
 if __name__ == '__main__':
     main()
